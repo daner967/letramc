@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.letramc.app"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.letramc.app"
@@ -32,5 +32,5 @@ kotlin {
 }
 
 dependencies {
-    implementation("io.github.kyant0:taglib:1.0.6")
+    implementation("io.github.kyant0:taglib:1.0.5")
 }

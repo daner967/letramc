@@ -8,21 +8,42 @@ import android.os.Bundle
 import android.provider.OpenableColumns
 import android.text.InputType
 import android.view.Gravity
+import android.view.WindowManager
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import com.kyant.taglib.TagLib
 
 class MainActivity : Activity() {
 
     private var audioUri: Uri? = null
+    private var busy = false
+
+    private lateinit var pickButton: Button
     private lateinit var fileLabel: TextView
     private lateinit var lyricsBox: EditText
     private lateinit var keepTimes: CheckBox
+    private lateinit var transcribeButton: Button
+    private lateinit var saveButton: Button
+    private lateinit var deleteButton: Button
+    private lateinit var modelSpinner: Spinner
+    private lateinit var langSpinner: Spinner
     private lateinit var status: TextView
+
+    private val models = listOf(
+        "Base (rápido, ~140 MB)" to "ggml-base.bin",
+        "Small (mejor calidad, ~470 MB)" to "ggml-small.bin",
+    )
+    private val languages = listOf(
+        "Detectar idioma" to "auto",
+        "Español" to "es",
+        "English" to "en",
+    )
 
     // Marcas de tiempo al inicio de línea, por ejemplo: [00:12.30]
     private val timeTag = Regex("""^(?:[ \t]*\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\][ \t]*)+""", RegexOption.MULTILINE)
@@ -37,13 +58,29 @@ class MainActivity : Activity() {
             setPadding(dp(16), dp(16), dp(16), dp(16))
         }
 
-        val pickButton = Button(this).apply {
+        pickButton = Button(this).apply {
             text = "Elegir MP3"
             setOnClickListener { pickAudio() }
         }
         fileLabel = TextView(this).apply {
             text = "Ningún archivo elegido"
             setPadding(0, dp(8), 0, dp(8))
+        }
+        modelSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                models.map { it.first }
+            )
+        }
+        langSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                languages.map { it.first }
+            )
+        }
+        transcribeButton = Button(this).apply {
+            text = "Transcribir la letra del audio"
+            setOnClickListener { confirmTranscribe() }
         }
         lyricsBox = EditText(this).apply {
             hint = "Aquí aparece la letra del MP3.\nPega o edita la letra.\nCon tiempos: [00:12.30] línea"
@@ -57,11 +94,11 @@ class MainActivity : Activity() {
             text = "Conservar tiempos [mm:ss.xx] (si lo desmarcas, se guarda sin tiempos)"
             isChecked = true
         }
-        val saveButton = Button(this).apply {
+        saveButton = Button(this).apply {
             text = "Guardar letra en el MP3"
             setOnClickListener { saveLyrics() }
         }
-        val deleteButton = Button(this).apply {
+        deleteButton = Button(this).apply {
             text = "Borrar letra del MP3"
             setOnClickListener { confirmDelete() }
         }
@@ -71,6 +108,11 @@ class MainActivity : Activity() {
 
         root.addView(pickButton)
         root.addView(fileLabel)
+        root.addView(TextView(this).apply { text = "Modelo de transcripción" })
+        root.addView(modelSpinner)
+        root.addView(TextView(this).apply { text = "Idioma de la canción" })
+        root.addView(langSpinner)
+        root.addView(transcribeButton)
         root.addView(lyricsBox)
         root.addView(keepTimes)
         root.addView(saveButton)
@@ -78,6 +120,20 @@ class MainActivity : Activity() {
         root.addView(status)
 
         setContentView(ScrollView(this).apply { addView(root) })
+    }
+
+    private fun setBusy(b: Boolean) {
+        busy = b
+        listOf(pickButton, transcribeButton, saveButton, deleteButton).forEach { it.isEnabled = !b }
+        if (b) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    private fun setStatus(text: String) {
+        runOnUiThread { status.text = text }
     }
 
     private fun pickAudio() {
@@ -110,6 +166,79 @@ class MainActivity : Activity() {
             status.text = "No se pudo leer el archivo: ${e.message}"
         }
     }
+
+    // ---------- Transcripción ----------
+
+    private fun confirmTranscribe() {
+        if (busy) return
+        val uri = audioUri
+        if (uri == null) {
+            status.text = "Primero elige un MP3."
+            return
+        }
+        if (lyricsBox.text.isNotBlank()) {
+            AlertDialog.Builder(this)
+                .setMessage("¿Reemplazar el texto actual por la transcripción?")
+                .setPositiveButton("Reemplazar") { _, _ -> runTranscription(uri) }
+                .setNegativeButton("Cancelar", null)
+                .show()
+        } else {
+            runTranscription(uri)
+        }
+    }
+
+    private fun runTranscription(uri: Uri) {
+        val modelName = models[modelSpinner.selectedItemPosition].second
+        val lang = languages[langSpinner.selectedItemPosition].second
+        setBusy(true)
+        status.text = "Preparando… Mantén la app abierta y la pantalla encendida."
+
+        Thread {
+            try {
+                val modelFile = ModelStore.ensure(this, modelName) { p ->
+                    setStatus("Descargando modelo (solo la primera vez)… $p%")
+                }
+                setStatus("Decodificando audio…")
+                val samples = AudioDecoder.decode(this, uri) { p ->
+                    setStatus("Decodificando audio… $p%")
+                }
+                if (samples.isEmpty()) throw IllegalStateException("No se pudo leer el audio.")
+
+                setStatus("Cargando modelo…")
+                val lib = WhisperLib()
+                val ctx = lib.nativeInit(modelFile.absolutePath)
+                if (ctx == 0L) {
+                    modelFile.delete()
+                    throw IllegalStateException("No se pudo cargar el modelo. Se borró; vuelve a intentarlo para descargarlo de nuevo.")
+                }
+                try {
+                    val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
+                    val ret = lib.nativeTranscribe(
+                        ctx, samples, lang, threads,
+                        ProgressListener { p -> setStatus("Transcribiendo… $p%") }
+                    )
+                    if (ret != 0) throw IllegalStateException("Whisper falló (código $ret).")
+                    val result = WhisperLib.formatSegments(lib.nativeResult(ctx))
+                    runOnUiThread {
+                        lyricsBox.setText(result)
+                        status.text = if (result.isBlank()) {
+                            "No se detectó letra en el audio."
+                        } else {
+                            "Listo. Revisa y corrige la letra, y luego guárdala."
+                        }
+                    }
+                } finally {
+                    lib.nativeFree(ctx)
+                }
+            } catch (e: Throwable) {
+                setStatus("Error: ${e.message ?: e.javaClass.simpleName}")
+            } finally {
+                runOnUiThread { setBusy(false) }
+            }
+        }.start()
+    }
+
+    // ---------- Guardar y borrar ----------
 
     private fun saveLyrics() {
         val uri = audioUri

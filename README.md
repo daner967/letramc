@@ -1,15 +1,12 @@
-# LetraMC (etapa 1)
+# LetraMC
 
 App Android para ver, escribir y borrar la letra dentro de archivos MP3.
 
-- Elige un MP3: si ya tiene letra, la muestra.
-- Pega o edita la letra. Con tiempos usa `[00:12.30] línea`.
-- Guardar con tiempos o sin tiempos (quita las marcas).
-- Borrar la letra existente.
+Etapa 1: leer / pegar / guardar con o sin tiempos / borrar la letra (etiqueta USLT).
+Etapa 2: transcribir la letra del audio con Whisper (sin internet; el modelo se descarga una vez).
 
-La letra se guarda en la etiqueta de letra del MP3 (USLT).
+Formato con tiempos: `[00:12.30] línea`.
 
-## Compilar el APK
-Al subir el proyecto a GitHub (rama `main`), Actions compila solo.
-El APK queda en la sección **Releases** del repositorio (archivo `app-debug.apk`).
-También se puede lanzar a mano desde la pestaña **Actions → Compilar APK → Run workflow**.
+## Compilar
+Al subir a GitHub (rama `main`), Actions descarga whisper.cpp y compila.
+El APK queda en **Releases** (`app-debug.apk`).

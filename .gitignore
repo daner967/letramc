@@ -1,5 +1,7 @@
 .gradle/
 build/
+.cxx/
 local.properties
 .idea/
 *.iml
+app/src/main/cpp/whisper.cpp/
